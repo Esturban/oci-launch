@@ -1,0 +1,36 @@
+# Environment variables - contains sensitive data
+.env
+
+# Terraform files
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate*
+terraform.tfplan*
+tfplan*
+*.tfplan
+
+# Log files
+*.log
+deployment.log
+
+# macOS files
+.DS_Store
+
+# SSH keys (if accidentally copied here)
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Temporary files
+*.tmp
+*.temp
+
+# SSH directory with keys
+.ssh/
+*.pub
+*.pem
+*.key
+
+# OCI specific files
+.oci/
