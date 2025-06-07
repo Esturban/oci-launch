@@ -7,7 +7,7 @@ set -e
 
 # Configuration (with environment variable support)
 MIN_RETRY_DELAY=${MIN_RETRY_DELAY:-20}      # Minimum wait time in seconds
-MAX_RETRY_DELAY=${MAX_RETRY_DELAY:-180}     # Maximum wait time in seconds (5 minutes)
+MAX_RETRY_DELAY=${MAX_RETRY_DELAY:-60}     # Maximum wait time in seconds (1 minute)
 LOG_FILE="deployment.log"
 TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
 DRY_RUN=false
@@ -28,9 +28,10 @@ NC='\033[0m' # No Color
 if [ -n "$OCI_AVAILABILITY_DOMAIN" ]; then
     AVAILABILITY_DOMAINS=("$OCI_AVAILABILITY_DOMAIN")
 else
-    # Default availability domains for Toronto region
+    # Default availability domains for Toronto region (try all available ADs)
     AVAILABILITY_DOMAINS=(
         "mUFn:CA-TORONTO-1-AD-1"
+        # Note: Toronto only has one AD, but script supports multiple
     )
 fi
 
@@ -288,9 +289,11 @@ attempt_deployment() {
     
     # Apply the deployment
     log "Applying deployment..."
-    terraform apply -auto-approve tfplan
+    terraform apply -auto-approve tfplan 2>&1 | tee terraform_apply.log
     
-    if [ $? -eq 0 ]; then
+    local terraform_exit_code=${PIPESTATUS[0]}
+    
+    if [ $terraform_exit_code -eq 0 ]; then
         log_success "Deployment successful!"
         
         # Get outputs
@@ -301,9 +304,24 @@ attempt_deployment() {
         send_notification "OCI Deployment Success" "Instance $instance_name created successfully!" "Glass"
         play_notification
         
+        # Clean up log file on success
+        rm -f terraform_apply.log
+        
         return 0
     else
-        log_error "Deployment failed"
+        log_error "Deployment failed (Terraform exit code: $terraform_exit_code)"
+        
+        # Check for specific error patterns
+        if grep -q "InternalError\|Out of host capacity\|500" terraform_apply.log; then
+            log_warning "🎯 Detected capacity issue - this is the expected error when A1.Flex is unavailable"
+            log_warning "   Error details: InternalError (500) = Out of host capacity"
+        elif grep -q "LimitExceeded" terraform_apply.log; then
+            log_error "❌ Service limit exceeded - you may already have A1.Flex instances"
+            log "💡 Check your OCI console for existing instances"
+        else
+            log_error "❌ Unexpected error occurred. Check terraform_apply.log for details"
+        fi
+        
         return 1
     fi
 }
@@ -313,6 +331,7 @@ cleanup_failed_attempt() {
     log "Cleaning up failed deployment attempt..."
     terraform destroy -auto-approve 2>/dev/null || true
     rm -f tfplan 2>/dev/null || true
+    rm -f terraform_apply.log 2>/dev/null || true
 }
 
 # Main deployment logic - infinite retry for A1.Flex only
@@ -346,7 +365,9 @@ main() {
                 log_success "🎉 A1.Flex instance successfully created!"
                 break
             else
-                log_warning "❌ A1.Flex not available in AD: $ad (host out of capacity)"
+                log_warning "❌ A1.Flex not available in AD: $ad"
+                log_warning "   Common reasons: Out of host capacity, InternalError (500)"
+                log_warning "   This is expected - OCI A1.Flex has very limited capacity"
                 cleanup_failed_attempt
             fi
         done
@@ -355,7 +376,9 @@ main() {
             local delay=$(get_random_delay)
             attempt=$((attempt + 1))
             log_warning "⏳ A1.Flex capacity not available. Waiting $delay seconds before retry #$attempt..."
-            log "💡 Tip: A1.Flex capacity often becomes available during off-peak hours"
+            log "💡 Tip: A1.Flex capacity often becomes available during off-peak hours (late evening/early morning UTC)"
+            log "💡 The 'InternalError' 500 response is OCI's way of saying 'out of capacity'"
+            log "💡 This script will keep trying - A1.Flex instances ARE available, just very limited"
             sleep $delay
         fi
     done
@@ -402,6 +425,7 @@ cleanup() {
     rm -rf .terraform*
     rm -f tfplan
     rm -f terraform.tfstate*
+    rm -f terraform_apply.log
     log_success "Cleanup completed!"
 }
 
