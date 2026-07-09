@@ -38,3 +38,4 @@ id_ed25519*
 # AI-IDE scaffolding (not used in this project)
 .github/copilot-instructions.md
 *.code-workspace
+.codegraph/
